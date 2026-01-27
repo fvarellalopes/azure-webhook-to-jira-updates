@@ -1,8 +1,13 @@
 import os
 import re
 import requests
+import logging
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -32,7 +37,7 @@ def process_jira_comment(issue_id, new_content, pr_url):
     Adds a new comment or updates an existing one if it matches the PR URL.
     """
     if not JIRA_URL or not JIRA_API_KEY:
-        print("Error: Jira configuration missing.")
+        logger.error("Jira configuration missing.")
         return False
 
     base_url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue/{issue_id}/comment"
@@ -47,7 +52,7 @@ def process_jira_comment(issue_id, new_content, pr_url):
         comments_data = response.json()
         comments = comments_data.get('comments', [])
     except requests.exceptions.RequestException as e:
-        print(f"Failed to fetch comments for issue {issue_id}: {e}")
+        logger.error(f"Failed to fetch comments for issue {issue_id}: {e}")
         return False
 
     # 2. Find existing comment for this PR
@@ -75,10 +80,10 @@ def process_jira_comment(issue_id, new_content, pr_url):
         try:
             response = requests.put(update_url, json=payload, headers=headers, auth=auth)
             response.raise_for_status()
-            print(f"Comment updated on Jira issue {issue_id}")
+            logger.info(f"Comment updated on Jira issue {issue_id}")
             return True
         except requests.exceptions.RequestException as e:
-            print(f"Failed to update comment {comment_id} on issue {issue_id}: {e}")
+            logger.error(f"Failed to update comment {comment_id} on issue {issue_id}: {e}")
             return False
 
     else:
@@ -90,20 +95,23 @@ def process_jira_comment(issue_id, new_content, pr_url):
         try:
             response = requests.post(base_url, json=payload, headers=headers, auth=auth)
             response.raise_for_status()
-            print(f"New comment created on Jira issue {issue_id}")
+            logger.info(f"New comment created on Jira issue {issue_id}")
             return True
         except requests.exceptions.RequestException as e:
-            print(f"Failed to create comment on issue {issue_id}: {e}")
+            logger.error(f"Failed to create comment on issue {issue_id}: {e}")
             return False
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
     if not data:
+        logger.warning("No JSON payload received")
         return jsonify({"message": "Nenhum payload JSON recebido"}), 400
 
     event_type = data.get('eventType', '')
     resource = data.get('resource', {})
+
+    logger.debug(f"Received event: {event_type}")
 
     # Handle specific event structures
     if event_type == 'ms.vss-code.git-pullrequest-comment-event':
@@ -117,10 +125,11 @@ def webhook():
     # Extract Jira Task ID
     match = re.search(r'\[J:([\w-]+)\]', title)
     if not match:
-        print("ID da tarefa Jira não encontrado no título do PR")
+        logger.info("ID da tarefa Jira não encontrado no título do PR")
         return jsonify({"message": "ID da tarefa Jira não encontrado"}), 200
 
     jira_task_id = match.group(1)
+    logger.info(f"Found Jira Task ID: {jira_task_id}")
 
     # Get PR URL
     pr_url = ""
@@ -158,4 +167,4 @@ def webhook():
         return jsonify({"message": "Falha ao processar comentário no Jira"}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=80)
+    app.run(host='0.0.0.0', port=80, debug=True)
