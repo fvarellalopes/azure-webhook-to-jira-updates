@@ -1,66 +1,98 @@
-# azure-webhook-to-jira-updates
+# Azure DevOps → Jira Pull Request Updater
 
-Webhook Python que recebe eventos do Azure DevOps relacionados a Pull Requests e adiciona/atualiza comentários nas tarefas do Jira correspondentes.
+A small webhook bridge that receives Azure DevOps pull request events and
+appends concise, human-readable event entries into a single comment on the
+corresponding Jira issue.
 
-Os Pull Requests devem conter o ID da tarefa do Jira no título no formato `[J:CHAVE-123]`. O webhook acumula as atualizações de um mesmo PR em um único comentário no Jira, evitando spam.
+Highlights
 
-Este projeto foi desenvolvido para funcionar com instâncias auto-hospedadas do Jira (Jira Server/Data Center).
+- Detects Jira issue key from PR title using the pattern `[J:<ISSUE_KEY>]`.
+- Appends each event to the end of an existing Jira comment (or creates one
+  if missing), separated by a visible delimiter: `----------------------------------`.
+- On PR creation the service creates the initial comment; the compact
+  reviewers summary is omitted for the creation event.
+- On updates, an "PR updated" block is appended only when the source commit
+  hash changed. Reviewer actions (approve/reject/waiting-author) include the
+  commit hash they occurred on.
+- For PR comment events the service includes the comment author, content and
+  a direct link to the discussion; it does not append the reviewers-update
+  block for these events.
 
-## Instalação
+Requirements
 
-1. Clone o repositório.
-2. Crie um ambiente virtual (recomendado):
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # No Windows: venv\Scripts\activate
-   ```
-3. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
+- Python 3.10+
+- See `requirements.txt` for runtime dependencies (`Flask`, `requests`, `python-dotenv`).
 
-## Configuração
-
-1. Copie o arquivo de exemplo de configuração:
-   ```bash
-   cp .env.example .env
-   ```
-2. Edite o arquivo `.env` com as suas credenciais e URL do Jira:
-   - `JIRA_URL`: URL base do seu Jira (ex: `https://jira.suaempresa.com.br`).
-   - `JIRA_API_KEY`: Seu Personal Access Token (PAT) ou senha.
-   - `JIRA_USERNAME`: Seu nome de usuário (necessário se estiver usando Autenticação Básica com senha; se usar apenas PAT como Bearer Token, pode deixar em branco ou ajustar o código conforme a configuração do seu servidor).
-
-## Uso
-
-Para rodar a aplicação:
+Install
 
 ```bash
-sudo python3 app.py
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-**Nota:** Como a aplicação roda na porta 80, é necessário privilégios de administrador (root/sudo) em sistemas Linux/Unix.
+Configuration
+Set environment variables in a `.env` file or in your shell:
 
-## Configuração no Azure DevOps
+- `JIRA_URL` — base URL of your Jira instance (for example, `https://jira.example.com`).
+- `JIRA_API_KEY` — Jira API key (the app uses `Authorization: Bearer <API_KEY>`).
+- `JIRA_TIMEOUT` — optional HTTP timeout in seconds (default: `10`).
+- `USER_AGENT` — optional User-Agent string to send with requests.
 
-1. Vá até o seu projeto no Azure DevOps.
-2. Acesse **Project Settings** > **Service Hooks**.
-3. Crie uma nova assinatura (**Create Subscription**) clicando no botão `+`.
-4. Escolha o serviço **Web Hooks**.
-5. Configure os seguintes eventos para a URL do seu webhook (ex: `http://seu-servidor/webhook`):
-   - **Pull request created**
-   - **Pull request merge attempted**
-   - **Pull request updated**
-   - **Pull request commented on**
-6. Nos filtros, você pode especificar o repositório se desejar.
-7. Teste a conexão para garantir que o Azure DevOps consegue alcançar seu servidor.
+Run locally
 
-## Funcionamento
+```bash
+python app.py
+```
 
-Quando um evento ocorre no Azure DevOps:
-1. O webhook recebe o JSON.
-2. Procura pelo padrão `[J:CHAVE-ID]` no título do Pull Request.
-3. Se encontrado, busca na tarefa do Jira correspondente se já existe um comentário com o link daquele PR.
-4. Se existir, adiciona a nova informação ao comentário existente.
-5. Se não existir, cria um novo comentário.
+VS Code debugging
 
-As mensagens são geradas em Português do Brasil.
+- A `.vscode/launch.json` configuration is included. Configure environment
+  variables there or rely on a local `.env` file.
+
+Example payloads (local testing)
+
+- PR created (creates a comment; reviewers summary omitted):
+
+```bash
+curl -X POST http://localhost:8023/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"git.pullrequest.created","resource":{"title":"[J:PROJ-123] Add feature","_links":{"web":{"href":"https://dev.azure/.../pullrequest/1"}},"lastMergeSourceCommit":{"commitId":"abc123"},"creationDate":"2026-01-27T21:24:42Z"}}'
+```
+
+- PR comment event (appends the author, content and a link; no reviewers block):
+
+```bash
+curl -X POST http://localhost:8023/webhook \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"ms.vss-code.git-pullrequest-comment-event","resource":{"pullRequest":{"title":"[J:PROJ-123] Add feature","_links":{"web":{"href":"https://dev.azure/.../pullrequest/1"}},"lastMergeSourceCommit":{"commitId":"abc123"}},"comment":{"content":"Looks good","publishedDate":"2026-01-28T00:24:40Z","author":{"displayName":"Alice"}}},"message":{"markdown":"Alice has [commented](https://dev.azure/.../pullrequest/1?_a=files&discussionId=10)"}}'
+```
+
+Notes about Jira XSRF and cookies
+
+- Some Jira installations require an XSRF token for mutating requests. The
+  service performs an initial `GET` to the Jira comments endpoint to capture
+  cookies like `JSESSIONID` and `atlassian.xsrf.token` and then sets
+  `X-Atlassian-Token`, `Referer` and `Origin` headers for subsequent POST/PUT
+  requests when necessary.
+
+Logging and security
+
+- Default logging level is `INFO` to avoid leaking sensitive values.
+- Errors include a stack trace via `logger.exception`, but the code avoids
+  logging request bodies, headers, cookies, or API keys.
+
+Code overview
+
+- `app.py` — main webhook server and core logic. Key functions:
+  - `get_jira_headers()` — builds the headers used for Jira API calls.
+  - `process_jira_comment()` — creates or appends event entries to a Jira comment.
+  - `vote_to_status()` — maps numeric reviewer votes to readable status strings.
+
+Contributing
+
+- Add unit tests under `tests/` for behavior changes.
+- Keep normal logs at `INFO` and use `logger.exception` for exceptions.
+
+If you'd like, I can run a local POST simulation and show the exact Jira
+comment text that would be created or appended.
