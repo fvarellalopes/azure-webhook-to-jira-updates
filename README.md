@@ -39,11 +39,6 @@ Run locally
 python app.py
 ```
 
-VS Code debugging
-
-- A `.vscode/launch.json` configuration is included. Configure environment
-  variables there or rely on a local `.env` file.
-
 Example payloads (local testing)
 
 - PR created (creates a comment; reviewers summary omitted):
