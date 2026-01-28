@@ -175,158 +175,50 @@ def process_jira_comment(
             target_comment = comment
             break
 
-    # 3. Create or Update
-    if target_comment:
-        # Update existing
-        comment_id = target_comment.get('id')
-        current_body = target_comment.get('body', '')
+    # Per new requirement: always create a new Jira comment for every incoming
+    # Azure event. Do not update/append to existing comments.
+    target_comment = None
 
-        # track whether we've already appended a PR update/hash block
-        appended_hash_block = False
+    # 3. Create or Update (delegated to small helpers)
 
-        # Append the new event content at the end of the existing comment.
-        # Separate events with a visible hyphen line as a delimiter.
-        separator = "\n\n----------------------------------\n\n"
-        updated_body = current_body + separator + new_content
-        if pr_source_commit:
-            # detect stored visible hash in existing comment (line like 'Hash: <commit>')
-            m = re.search(r'Hash:\s*([0-9a-fA-F]+)', current_body)
-            stored_hash = m.group(1) if m else None
-            if stored_hash:
-                logger.info(f"Found stored Hash: {stored_hash}")
-                if pr_source_commit != stored_hash:
-                    # append an update section noting the change
-                    updated_body += f"\n\n*PR Atualizado.*\nHash: {pr_source_commit}\nData: {pr_event_date or ''}\n"
-                    if pr_status:
-                        updated_body += f"Status: {pr_status}\n"
-                    appended_hash_block = True
-                    logger.info(f"Source commit changed: {stored_hash} -> {pr_source_commit}")
-            else:
-                # No stored hash found; append hash/data for trace
-                updated_body += f"\n\nHash: {pr_source_commit}\nData: {pr_event_date or ''}\n"
-
-        # Detect status change compared to existing comment (line like 'Status: <value>')
-        if pr_status:
-            mstat = re.search(r'Status:\s*(\S+)', current_body)
-            stored_status = mstat.group(1) if mstat else None
-            if stored_status and stored_status != pr_status:
-                updated_body += f"\n\n**Status changed**\nOld Status: {stored_status}\nNew Status: {pr_status}\n"
-                logger.info(f"Status changed: {stored_status} -> {pr_status}")
-
-        # Detect reviewers change: build a compact summary (Name=Status) and compare
-        if pr_reviewers is not None:
-            def vote_to_status(v):
-                try:
-                    iv = int(v)
-                except Exception:
-                    return str(v)
-                if iv == 10:
-                    return 'Aprovado'
-                if iv == -10:
-                    return 'Reprovado'
-                if iv == -5:
-                    return 'Aguardando autor'
-                if iv == 0:
-                    return 'Aguardando revisão'
-                return f'vote={iv}'
-
-            try:
-                reviewers_summary = ', '.join([f"{r.get('displayName')}={vote_to_status(r.get('vote'))}" for r in pr_reviewers])
-            except Exception:
-                reviewers_summary = ''
-
-            if reviewers_summary and consider_reviewers_delta:
-                # extract stored reviewers statuses from existing comment lines like 'Name - *Status*'
-                stored_pairs = re.findall(r'^(.*?)\s*-\s*\*(.*?)\*', current_body, flags=re.MULTILINE)
-                stored_rev = ', '.join([f"{n}={s}" for (n, s) in stored_pairs]) if stored_pairs else None
-                if stored_rev != reviewers_summary:
-                    updated_body += "\n\n*Revisores atualizados*\n"
-                    for r in pr_reviewers:
-                        status = vote_to_status(r.get('vote'))
-                        updated_body += f"{r.get('displayName')} - *{status}*\n"
-                    updated_body += "\n"
-                    logger.info(f"Reviewers updated: {reviewers_summary}")
-                    # If reviewers actions include approvals/rejections/waiting-author,
-                    # always include the hash they occurred on even if the hash hasn't changed.
-                    try:
-                        def vote_int(v):
-                            try:
-                                return int(v)
-                            except Exception:
-                                return None
-
-                        special_votes = {10, -10, -5}
-                        has_special = any(vote_int(r.get('vote')) in special_votes for r in pr_reviewers)
-                        if pr_source_commit and has_special and not appended_hash_block:
-                            updated_body += f"\n\n*PR Atualizado.*\nHash: {pr_source_commit}\nData: {pr_event_date or ''}\n"
-                            if pr_status:
-                                updated_body += f"Status: {pr_status}\n"
-                            appended_hash_block = True
-                    except Exception:
-                        pass
-
-        update_url = f"{base_url}/{comment_id}"
-        payload = {"body": updated_body}
-
+    def _create_jira_comment(session_obj, url, body_text) -> bool:
+        payload = {"body": body_text}
         try:
-            # If Jira returned an XSRF cookie, send it in the header for mutating requests
-            xsrf = session.cookies.get('atlassian.xsrf.token')
+            xsrf = session_obj.cookies.get('atlassian.xsrf.token')
             if xsrf:
-                session.headers['X-Atlassian-Token'] = xsrf
-                session.headers['Referer'] = JIRA_URL
-                session.headers['Origin'] = JIRA_URL
-            logger.info("Updating comment %s on issue %s", comment_id, issue_id)
-            response = session.put(update_url, json=payload, timeout=JIRA_TIMEOUT)
-            logger.info("Jira PUT %s -> status=%s", update_url, response.status_code)
-            response.raise_for_status()
-            logger.info("Comment updated on Jira issue %s", issue_id)
-            return True
-        except requests.exceptions.RequestException:
-            logger.exception("Failed to update comment %s on issue %s", comment_id, issue_id)
-            return False
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
-
-    else:
-        # Create new
-        full_body = f"*Atualizações do Pull Request Azure DevOps*\nLink: {pr_url}\n\n{new_content}"
-        if pr_source_commit:
-            full_body += f"\nHash: {pr_source_commit}\nData: {pr_event_date or ''}\n"
-        # include a compact reviewers summary if provided and allowed
-        if pr_reviewers and show_reviewers_summary:
-            try:
-                # Use the standardized vote->status mapping instead of raw numbers
-                parts = [f"{r.get('displayName')} - {vote_to_status(r.get('vote'))}" for r in pr_reviewers]
-                summary = ", ".join(parts)
-                full_body += f"\nReviewers Summary: {summary}\n"
-            except Exception:
-                pass
-        payload = {"body": full_body}
-
-        try:
-            # If Jira returned an XSRF cookie, send it in the header for mutating requests
-            xsrf = session.cookies.get('atlassian.xsrf.token')
-            if xsrf:
-                session.headers['X-Atlassian-Token'] = xsrf
-                session.headers['Referer'] = JIRA_URL
-                session.headers['Origin'] = JIRA_URL
+                session_obj.headers['X-Atlassian-Token'] = xsrf
+                session_obj.headers['Referer'] = JIRA_URL
+                session_obj.headers['Origin'] = JIRA_URL
             logger.info("Creating new comment on issue %s", issue_id)
-            response = session.post(base_url, json=payload, timeout=JIRA_TIMEOUT)
-            logger.info("Jira POST %s -> status=%s", base_url, response.status_code)
-            response.raise_for_status()
+            resp = session_obj.post(url, json=payload, timeout=JIRA_TIMEOUT)
+            logger.info("Jira POST %s -> status=%s", url, resp.status_code)
+            resp.raise_for_status()
             logger.info("New comment created on Jira issue %s", issue_id)
             return True
         except requests.exceptions.RequestException:
             logger.exception("Failed to create comment on issue %s", issue_id)
             return False
-        finally:
-            try:
-                session.close()
-            except Exception:
-                pass
+    # Create new comment body and POST
+    full_body = f"*Atualizações do Pull Request Azure DevOps*\nLink: {pr_url}\n\n{new_content}"
+    if pr_source_commit:
+        full_body += f"\nHash: {pr_source_commit}\nData: {pr_event_date or ''}\n"
+    # include a compact reviewers summary if provided and allowed
+    if pr_reviewers and show_reviewers_summary:
+        try:
+            parts = [f"{r.get('displayName')} - *{vote_to_status(r.get('vote'))}*" for r in pr_reviewers]
+            summary = ", ".join(parts)
+            full_body += f"\nResumo de Revisores: {summary}\n"
+        except Exception:
+            pass
+
+    try:
+        result = _create_jira_comment(session, base_url, full_body)
+        return result
+    finally:
+        try:
+            session.close()
+        except Exception:
+            pass
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -365,6 +257,31 @@ def webhook():
         pr_url = pr_links['web']['href']
     elif 'url' in resource:
         pr_url = resource['url']
+
+    # Fallbacks: sometimes the comment event places links in nested structures
+    # or only provides a comment link in `message.markdown`. Try those sources
+    # when `pr_url` is empty.
+    if not pr_url:
+        # try nested pullRequest._links
+        nested_pr = None
+        if isinstance(resource, dict):
+            nested_pr = resource.get('pullRequest') or resource.get('resource')
+        if nested_pr and isinstance(nested_pr, dict):
+            nl = nested_pr.get('_links', {})
+            if isinstance(nl, dict) and 'web' in nl and nl['web'].get('href'):
+                pr_url = nl['web']['href']
+
+    if not pr_url:
+        # attempt to extract from message.markdown (comment events often include a link)
+        message_md = data.get("message", {}).get("markdown", "") if isinstance(data.get("message"), dict) else ""
+        mlink = re.search(r'\((https?://[^)]+)\)', message_md or "")
+        if mlink:
+            url = mlink.group(1)
+            # drop query params
+            url_no_q = url.split('?')[0]
+            # capture up to /pullrequest/<id> if present
+            mpr = re.search(r'(https?://[^/]+/.*/pullrequest/\d+)', url_no_q)
+            pr_url = mpr.group(1) if mpr else url_no_q
 
     # Extract PR source commit and event date (createdDate from webhook or resource.creationDate)
     pr_source_commit = None

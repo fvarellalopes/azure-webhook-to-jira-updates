@@ -1,22 +1,16 @@
 # Azure DevOps → Jira Pull Request Updater
 
 A small webhook bridge that receives Azure DevOps pull request events and
-appends concise, human-readable event entries into a single comment on the
-corresponding Jira issue.
+creates concise, human-readable comments on the corresponding Jira issue.
 
 Highlights
 
 - Detects Jira issue key from PR title using the pattern `[J:<ISSUE_KEY>]`.
-- Appends each event to the end of an existing Jira comment (or creates one
-  if missing), separated by a visible delimiter: `----------------------------------`.
-- On PR creation the service creates the initial comment; the compact
-  reviewers summary is omitted for the creation event.
-- On updates, an "PR updated" block is appended only when the source commit
-  hash changed. Reviewer actions (approve/reject/waiting-author) include the
-  commit hash they occurred on.
-- For PR comment events the service includes the comment author, content and
-  a direct link to the discussion; it does not append the reviewers-update
-  block for these events.
+- Every incoming Azure DevOps event creates a new comment on the Jira issue.
+  Events are NOT appended to existing Jira comments.
+  - The comment contains PR link and event-specific details (created/updated/merge/comment).
+  - If present, a source commit `Hash:` and `Data:` (date) are included.
+  - When reviewers are provided, a compact reviewers summary is added.
 
 Requirements
 

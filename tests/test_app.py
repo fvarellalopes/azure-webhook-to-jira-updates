@@ -88,11 +88,11 @@ class TestWebhookUpdated(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         session.get.assert_called()
-        session.put.assert_called_once()
-        put_url = session.put.call_args[0][0]
-        self.assertIn('/rest/api/2/issue/PROJ-2/comment/42', put_url)
-        body = session.put.call_args[1]['json']['body']
-        self.assertIn('*PR Atualizado.*', body)
+        session.post.assert_called_once()
+        post_url = session.post.call_args[0][0]
+        self.assertIn('/rest/api/2/issue/PROJ-2/comment', post_url)
+        body = session.post.call_args[1]['json']['body']
+        self.assertIn('PR Atualizado', body)
         self.assertIn('Hash: cafebabe', body)
         self.assertIn('Status: active', body)
 
@@ -136,12 +136,12 @@ class TestWebhookUpdated(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         session.get.assert_called()
-        session.put.assert_called_once()
-        body = session.put.call_args[1]['json']['body']
-        self.assertIn('*Revisores atualizados*', body)
+        session.post.assert_called_once()
+        body = session.post.call_args[1]['json']['body']
+        self.assertIn('Resumo de Revisores', body)
         self.assertIn('Reviewer One - *Aprovado*', body)
-        # because Reviewer One had a special vote (10), a PR Atualizado block with new hash should be appended
-        self.assertIn('*PR Atualizado.*', body)
+        # because Reviewer One had a special vote (10), the comment should include PR update details and the new hash
+        self.assertIn('PR Atualizado', body)
         self.assertIn('Hash: 222222', body)
 
     @patch('app.requests.Session')
@@ -183,8 +183,8 @@ class TestWebhookUpdated(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         session.get.assert_called()
-        session.put.assert_called_once()
-        body = session.put.call_args[1]['json']['body']
+        session.post.assert_called_once()
+        body = session.post.call_args[1]['json']['body']
         self.assertIn('Comentário de Alice', body)
         self.assertIn('Looks good to me', body)
         self.assertIn('Link do comentário: https://dev.azure', body)
